@@ -1,0 +1,44 @@
+{
+  "name": "dsh-plugin-standard",
+  "version": "2.0.0",
+  "description": "Open specification + compliance checker for building high-quality DeepSeek Harness (DSH) plugins",
+  "type": "module",
+  "bin": {
+    "dsh-plugin-standard": "scripts/verify-plugin.mjs"
+  },
+  "files": [
+    "scripts",
+    "STANDARD.md",
+    "STANDARD.en.md",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "LICENSE-STANDARD",
+    "template"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "test": "node test/run.mjs"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "standard",
+    "specification",
+    "linter",
+    "verifier"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lanbaolu/dsh-plugin-standard.git"
+  },
+  "bugs": {
+    "url": "https://github.com/lanbaolu/dsh-plugin-standard/issues"
+  },
+  "homepage": "https://github.com/lanbaolu/dsh-plugin-standard#readme"
+}

@@ -1,0 +1,5 @@
+- insert:
+    - id: dsh-my-plugin
+      name: dsh-my-plugin
+      config:
+        enabled: true

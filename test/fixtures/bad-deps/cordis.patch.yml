@@ -1,0 +1,3 @@
+- insert:
+    - id: bad-deps-plugin
+      name: bad-deps-plugin

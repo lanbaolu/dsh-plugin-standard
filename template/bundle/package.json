@@ -1,0 +1,47 @@
+{
+  "name": "dsh-my-plugin",
+  "version": "0.1.0",
+  "description": "A DSH Plugin Standard v2.0 compliant bundle skeleton (host-only; extend with client per the standard)",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "bash scripts/build.sh",
+    "test": "echo \"add your tests (node --test or vitest)\"",
+    "verify": "node scripts/verify-plugin.mjs .",
+    "verify:pack": "node scripts/verify-plugin.mjs . --pack",
+    "pack": "npm pack --dry-run"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": ">=4.0.0-rc <5",
+    "@deepseek-ai/dsh-tools": "^0.1.0-rc.6",
+    "@deepseek-ai/schemastery": "^3.18.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.0",
+    "@types/node": "^22"
+  },
+  "license": "MIT"
+}
