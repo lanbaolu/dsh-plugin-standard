@@ -105,6 +105,17 @@ dsh-plugin-standard/
     └── bundle/          # minimal compliant plugin skeleton
 ```
 
+## Publishing (npm)
+
+The release command is fixed (the default registry is a mirror, so the official registry MUST be explicit):
+
+```sh
+./scripts/publish.sh                # self-check → publish; may trigger OTP in your browser
+./scripts/publish.sh --otp <code>   # pass the one-time password directly
+```
+
+OTP authentication is always completed by the maintainer in person — never by an agent.
+
 ## Versioning & stability
 
 - **SemVer.** A MUST/MUST-NOT change is a MAJOR bump. New SHOULD/MAY checks are MINOR.

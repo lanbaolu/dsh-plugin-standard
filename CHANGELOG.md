@@ -22,3 +22,7 @@ All notable changes to the DSH Plugin Standard (spec text + `verify-plugin` tool
 ## 1.0 — 2026-08-19
 
 - Initial rules document (DSH 插件规则 v1.0).
+
+## 2.0.0+ (tooling only)
+
+- Added `scripts/publish.sh` — the fixed official-registry publish command (`npm publish --registry https://registry.npmjs.org --access public`), with pre-publish `npm test` gate and explicit OTP handoff to the maintainer.
