@@ -14,6 +14,8 @@ const cases = [
   { dir: 'test/fixtures/ok', expect: 0, note: 'compliant fixture' },
   { dir: 'test/fixtures/bad-name', expect: 1, note: 'patch insert name mismatch' },
   { dir: 'test/fixtures/bad-deps', expect: 1, note: '@deepseek-ai/* in dependencies' },
+  { dir: 'test/fixtures/ok-koishi', expect: 0, note: 'koishi compatible (auto mode, peerDeps.koishi present)' },
+  { dir: 'test/fixtures/bad-koishi-nopeer', expect: 1, note: 'koishi missing peerDependencies.koishi' },
 ]
 
 let failed = 0

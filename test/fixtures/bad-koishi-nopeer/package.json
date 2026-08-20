@@ -1,0 +1,5 @@
+{
+  "name": "koishi-plugin-nopeer",
+  "version": "1.0.0",
+  "main": "lib/index.js"
+}

@@ -6,12 +6,18 @@
  * `npx dsh-plugin-standard <dir>` 运行。权威规范见 dsh-plugin-standard/STANDARD.md。
  *
  * 用法：
- *   node scripts/verify-plugin.mjs [插件目录] [--pack] [--json] [--version] [--help]
+ *   node scripts/verify-plugin.mjs [插件目录] [--pack] [--koishi] [--json] [--version] [--help]
  *
  * 退出码：
  *   0 = 无 MUST 违规
  *   1 = 存在 MUST 违规（不得发布/装配）
  *   2 = 目录不可用或参数错误
+ *
+ * --koishi 兼容模式（生态桥 F1）：
+ *   自动识别 koishi 插件（包名 koishi-plugin-* 或 peerDependencies.koishi）即启用，
+ *   也可 --koishi 强制。跳过 DSH 专属 MUST（2.1.1 type/2.1.3 client/2.1.4 bundle patch），
+ *   改跑 koishi 兼容检查集（KO1 peerDeps.koishi、KO2 main、KO3 安全/生命周期红线）。
+ *   语义：门槛级 Compliant（结构合规 + shim 覆盖），非 DSH 原生合规。
  *
  * 检查范围对应 STANDARD.md 的 §2 / §6：
  *   - 2.1.1 type module
@@ -27,7 +33,7 @@
  * 注意：这是静态门禁，不是完整评审。§3/§4/§5 的生命周期、HTTP、
  * 持久化、XSS 等仍需人工按 STANDARD.md 附录 B 审查。
  */
-import { access, readFile, stat } from 'node:fs/promises'
+import { access, readFile, stat, readdir } from 'node:fs/promises'
 import { dirname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
@@ -38,9 +44,10 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 // ---------- 参数解析 ----------
 function parseArgs(argv) {
-  const args = { dir: process.cwd(), pack: false, json: false, version: false }
+  const args = { dir: process.cwd(), pack: false, json: false, version: false, koishi: false }
   for (const a of argv) {
     if (a === '--pack') args.pack = true
+    else if (a === '--koishi') args.koishi = true
     else if (a === '--json') args.json = true
     else if (a === '--version' || a === '-v') args.version = true
     else if (a === '--help' || a === '-h') args.help = true
@@ -55,6 +62,43 @@ function parseArgs(argv) {
 
 // ---------- 结果收集 ----------
 const results = []
+/** 识别 koishi 插件：包名 koishi-plugin-*（含 scope）或 peerDependencies 含 koishi。 */
+function isKoishiPlugin(pkg) {
+  if (!pkg || typeof pkg.name !== 'string') return false
+  if (/^(?:@[^/]+\/)?koishi-plugin-/.test(pkg.name)) return true
+  return Boolean(pkg.peerDependencies && pkg.peerDependencies.koishi)
+}
+
+/** 扫描 koishi 插件源码的安全/生命周期红线（WARN 级，平台不背书提示；真正的隔离交给 fail-soft）。 */
+async function scanKoishiRisks(dir, pkg) {
+  const risks = []
+  const seen = new Set()
+  const files = []
+  if (pkg.main) files.push(resolve(dir, pkg.main))
+  try {
+    const entries = await readdir(resolve(dir, 'lib'))
+    for (const e of entries) if (e.endsWith('.js') || e.endsWith('.cjs')) files.push(resolve(dir, 'lib', e))
+  } catch { /* 无 lib 目录 */ }
+  const patterns = [
+    { re: /\beval\s*\(/, label: 'eval(' },
+    { re: /new\s+Function\s*\(/, label: 'new Function(' },
+    { re: /child_process|execFile(?:Sync)?\s*\(|spawn(?:Sync)?\s*\(/, label: '子进程命令执行' },
+    { re: /process\.env/, label: '读取 process.env（密钥/凭据暴露风险）' },
+    { re: /writeFile(?:Sync)?\s*\(|appendFile(?:Sync)?\s*\(|unlink(?:Sync)?\s*\(/, label: '文件系统写入/删除' },
+  ]
+  for (const f of files) {
+    let text
+    try { text = await readFile(f, 'utf8') } catch { continue }
+    for (const { re, label } of patterns) {
+      if (re.test(text) && !seen.has(label)) {
+        seen.add(label)
+        risks.push(`${label}（${f.slice(dir.length + 1)}）`)
+      }
+    }
+  }
+  return risks
+}
+
 function record(level, clause, message) {
   results.push({ level, clause, message })
 }
@@ -148,7 +192,7 @@ async function main() {
     process.stdout.write(
       'DSH 插件规范合规校验器\n\n' +
       '用法:\n' +
-      '  node scripts/verify-plugin.mjs [插件目录] [--pack] [--json] [--version]\n\n' +
+      '  node scripts/verify-plugin.mjs [插件目录] [--pack] [--koishi] [--json] [--version]\n\n' +
       '退出码:\n' +
       '  0 = 无 MUST 违规\n' +
       '  1 = 存在 MUST 违规\n' +
@@ -177,8 +221,16 @@ async function main() {
   const hasClientExport = Boolean(pkg.exports && (pkg.exports['./client'] || (typeof pkg.exports === 'string' && false)))
   let patchIds = []
 
+  // koishi 兼容模式：--koishi 强制，或自动识别 koishi 插件即启用（生态桥 F1）
+  const koishiMode = args.koishi || isKoishiPlugin(pkg)
+  if (koishiMode && !args.koishi) {
+    record('INFO', 'KO0', '自动识别为 koishi 插件，已启用 koishi 兼容校验模式（门槛级 Compliant，平台不背书）')
+  }
+
   // ---- 2.1.1 type: module ----
-  if (pkg.type === 'module') {
+  if (koishiMode) {
+    record('INFO', '2.1.1', 'koishi 兼容模式：跳过 type:module 要求（CJS/默认导出由 cordis loader 归一化）')
+  } else if (pkg.type === 'module') {
     record('PASS', '2.1.1', 'type: module')
   } else {
     record('FAIL', '2.1.1', `type 应为 "module"，当前 ${JSON.stringify(pkg.type)}`)
@@ -209,7 +261,9 @@ async function main() {
   }
 
   // ---- 2.1.3 client 声明与 ./client 同时出现 ----
-  if (hasClientDecl && !hasClientExport) {
+  if (koishiMode) {
+    record('INFO', '2.1.3', 'koishi 兼容模式：跳过 client 声明要求（koishi 生态无 DSH client）')
+  } else if (hasClientDecl && !hasClientExport) {
     record('FAIL', '2.1.3', '声明了 dsh.client 但 exports 缺少 "./client"')
   } else if (!hasClientDecl && hasClientExport) {
     record('FAIL', '2.1.3', '存在 exports["./client"] 但缺少 dsh.client 声明')
@@ -232,7 +286,9 @@ async function main() {
   }
 
   // ---- 2.1.4 dsh.bundle.patch ----
-  if (hasBundle) {
+  if (koishiMode) {
+    record('INFO', '2.1.4', 'koishi 兼容模式：无 bundle patch（由适配层 bundle 包装装配）')
+  } else if (hasBundle) {
     const patchRel = pkg.dsh.bundle.patch
     const patchFile = resolve(dir, patchRel)
     if (await exists(patchFile)) {
@@ -245,7 +301,7 @@ async function main() {
   }
 
   // ---- 2.2.1/2.2.4 patch 契约 + 2.1.7 name 一致性 ----
-  if (hasBundle) {
+  if (!koishiMode && hasBundle) {
     const patchRel = pkg.dsh.bundle.patch
     const patchFile = resolve(dir, patchRel)
     if (await exists(patchFile)) {
@@ -316,6 +372,30 @@ async function main() {
     record('PASS', '2.1.6', 'dependencies 无 @deepseek-ai/*（共享运行时应走 peerDependencies）')
   } else {
     record('FAIL', '2.1.6', `dependencies 含共享运行时 @deepseek-ai/*: ${forbidden.join(', ')}（应移到 peerDependencies）`)
+  }
+
+  // ---- koishi 兼容检查集（KO1/KO2/KO3）----
+  if (koishiMode) {
+    const peers = pkg.peerDependencies || {}
+    if (peers.koishi) {
+      record('PASS', 'KO1', `声明 peerDependencies.koishi: ${peers.koishi}`)
+    } else {
+      record('FAIL', 'KO1', 'koishi 插件必须声明 peerDependencies.koishi（shim 解析依赖它，无则无法桥接）')
+    }
+    if (pkg.main) {
+      const p = resolve(dir, pkg.main)
+      if (await exists(p)) record('PASS', 'KO2', `main 存在: ${pkg.main}`)
+      else record('FAIL', 'KO2', `main 指向不存在的文件: ${pkg.main}`)
+    } else {
+      record('FAIL', 'KO2', 'koishi 插件必须声明 main（CJS 产物入口）')
+    }
+    const risks = await scanKoishiRisks(dir, pkg)
+    if (risks.length === 0) {
+      record('PASS', 'KO3', '未发现高危模式（eval / new Function / 任意命令执行）')
+    } else {
+      for (const r of risks) record('WARN', 'KO3', `安全红线提示: ${r}（平台不背书，安装需谨慎；隔离交给 fail-soft）`)
+    }
+    record('INFO', 'KO4', 'koishi 兼容 = 门槛级 Compliant（结构合规 + shim 覆盖），非 DSH 原生合规；按特殊通道 Experimental 上架')
   }
 
   // ---- 6.1 scripts 门禁（SHOULD） ----
