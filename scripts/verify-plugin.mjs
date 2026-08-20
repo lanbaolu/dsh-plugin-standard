@@ -164,6 +164,7 @@ function semverSatisfies(version, range) {
 /** 静态扫描插件的 COMPAT 相关引用（peerDep 范围 / 服务 key / 旧包名）。 */
 async function scanCompat(dir, pkg) {
   const referencedKeys = new Set()
+  const propertyKeys = new Set()
   const oldPackages = new Set()
   const rangeIssues = []
   // 1) peerDependencies 中 @deepseek-ai/* 的范围 + 旧包名识别
@@ -182,29 +183,39 @@ async function scanCompat(dir, pkg) {
   } catch { /* 无 lib */ }
   const allOldKeys = new Set(Object.values(COMPAT_REGISTRY.serviceAliases).flat())
   const allNewKeys = Object.keys(COMPAT_REGISTRY.serviceAliases)
-  const knownRuntime = new Set(['get', 'logger', 'on', 'emit', 'provide', 'effect', 'inject', 'plugin', 'registry', 'root', 'model', 'config', 'runtime'])
+  const knownRuntime = new Set(['get', 'logger', 'on', 'emit', 'provide', 'effect', 'inject', 'plugin', 'registry', 'root', 'model', 'config', 'runtime', 'baseUrl', 'baseDir', 'slots', 'agents', 'commands', 'name', 'server', 'ref', 'app', 'state'])
   for (const f of files) {
     let t
     try { t = await readFile(f, 'utf8') } catch { continue }
-    for (const m of t.matchAll(/ctx\.get\(['"]([a-zA-Z]+)['"]\)|ctx\.([a-zA-Z]+)\b/g)) {
-      const k = m[1] ?? m[2]
-      if (k && !knownRuntime.has(k) && !referencedKeys.has(k)) referencedKeys.add(k)
+    // 双通道：ctx.get('x') / inject 声明 = 显式服务获取（严格）；ctx.x 属性访问 = 弱信号（提示）
+    for (const m of t.matchAll(/ctx\.get\(['"]([a-zA-Z]+)['"]\)/g)) {
+      if (m[1] && !referencedKeys.has(m[1])) referencedKeys.add(m[1])
+    }
+    for (const m of t.matchAll(/ctx\.([a-zA-Z]+)\b/g)) {
+      const k = m[1]
+      if (k && !knownRuntime.has(k) && !propertyKeys.has(k)) propertyKeys.add(k)
     }
     for (const m of t.matchAll(/from\s+['"](@deepseek-ai\/[^'"]+)['"]|require\(['"](@deepseek-ai\/[^'"]+)['"]\)/g)) {
       const p = m[1] ?? m[2]
       if (Object.values(COMPAT_REGISTRY.packageAliases).flat().includes(p)) oldPackages.add(p)
     }
   }
-  return { referencedKeys: [...referencedKeys], oldPackages: [...oldPackages], rangeIssues, allOldKeys, allNewKeys, currentServices: COMPAT_REGISTRY.currentServices }
+  // inject 声明（DSH 插件依赖的服务列表）也视为显式服务获取
+  for (const k of Array.isArray(pkg.inject) ? pkg.inject : []) {
+    if (typeof k === 'string') referencedKeys.add(k)
+  }
+  return { referencedKeys: [...referencedKeys], propertyKeys: [...propertyKeys], oldPackages: [...oldPackages], rangeIssues, allOldKeys, allNewKeys, currentServices: COMPAT_REGISTRY.currentServices }
 }
 
-/** 判级：未知服务 key → Not-Compliant；命中改名/旧包名/范围不满足 → COMPAT；否则 Compliant。 */
+/** 判级：显式未知服务 key → Not-Compliant；命中改名/旧包名/范围不满足 → COMPAT；否则 Compliant。 */
 function judgeCompat(s) {
-  const unknown = s.referencedKeys.filter((k) => !s.currentServices.includes(k) && !s.allNewKeys.includes(k) && !s.allOldKeys.has(k))
-  if (unknown.length > 0) return { level: 'Not-Compliant', unknown }
-  const hitsOld = s.referencedKeys.filter((k) => s.allOldKeys.has(k))
+  const isUnknown = (k) => !s.currentServices.includes(k) && !s.allNewKeys.includes(k) && !s.allOldKeys.has(k)
+  const unknown = s.referencedKeys.filter(isUnknown)
+  const propertyUnknown = s.propertyKeys.filter(isUnknown)
+  if (unknown.length > 0) return { level: 'Not-Compliant', unknown, propertyUnknown }
+  const hitsOld = [...s.referencedKeys, ...s.propertyKeys].filter((k) => s.allOldKeys.has(k))
   const compat = s.rangeIssues.length > 0 || hitsOld.length > 0 || s.oldPackages.length > 0
-  return { level: compat ? 'COMPAT' : 'Compliant', unknown, hitsOld }
+  return { level: compat ? 'COMPAT' : 'Compliant', unknown, propertyUnknown, hitsOld }
 }
 
 function record(level, clause, message) {
@@ -293,7 +304,7 @@ function parsePatch(profileText) {
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.version) {
-    process.stdout.write('DSH Plugin Standard checker 2.2.0\n')
+    process.stdout.write('DSH Plugin Standard checker 2.2.1\n')
     process.exit(0)
   }
   if (args.help) {
@@ -521,6 +532,8 @@ async function main() {
     }
     if (judged.unknown.length > 0) {
       record('FAIL', 'CP2', `引用未知服务 key（不可 shim，语义缺失）: ${judged.unknown.join(', ')}`)
+    } else if (judged.propertyUnknown.length > 0) {
+      record('WARN', 'CP2', `引用疑似 ctx 属性（忽略，非服务依赖）: ${judged.propertyUnknown.join(', ')}`)
     } else if (judged.hitsOld.length > 0) {
       record('WARN', 'CP2', `引用旧服务 key（可 COMPAT 别名重定向）: ${judged.hitsOld.join(', ')}`)
     } else {

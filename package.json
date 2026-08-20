@@ -1,6 +1,6 @@
 {
   "name": "dsh-plugin-standard",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "description": "Open specification + compliance checker for building high-quality DeepSeek Harness (DSH) plugins",
   "type": "module",
   "bin": {
