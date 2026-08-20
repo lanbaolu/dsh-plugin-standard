@@ -1,0 +1,1 @@
+{ "name": "plugin-ok", "version": "1.0.0", "main": "lib/index.js", "type": "module", "peerDependencies": { "@deepseek-ai/dsh-tools": ">=0.0.1-rc <2" } }

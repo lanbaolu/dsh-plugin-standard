@@ -1,0 +1,1 @@
+{ "name": "plugin-old", "version": "1.0.0", "main": "lib/index.js", "peerDependencies": { "@deepseek-ai/dsh-host-webserver": "^0.1.0-rc.6" } }

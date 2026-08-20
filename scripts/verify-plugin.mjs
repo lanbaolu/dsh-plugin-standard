@@ -6,7 +6,7 @@
  * `npx dsh-plugin-standard <dir>` 运行。权威规范见 dsh-plugin-standard/STANDARD.md。
  *
  * 用法：
- *   node scripts/verify-plugin.mjs [插件目录] [--pack] [--koishi] [--json] [--version] [--help]
+ *   node scripts/verify-plugin.mjs [插件目录] [--pack] [--koishi] [--compat] [--json] [--version] [--help]
  *
  * 退出码：
  *   0 = 无 MUST 违规
@@ -44,10 +44,11 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 // ---------- 参数解析 ----------
 function parseArgs(argv) {
-  const args = { dir: process.cwd(), pack: false, json: false, version: false, koishi: false }
+  const args = { dir: process.cwd(), pack: false, json: false, version: false, koishi: false, compat: false }
   for (const a of argv) {
     if (a === '--pack') args.pack = true
     else if (a === '--koishi') args.koishi = true
+    else if (a === '--compat') args.compat = true
     else if (a === '--json') args.json = true
     else if (a === '--version' || a === '-v') args.version = true
     else if (a === '--help' || a === '-h') args.help = true
@@ -97,6 +98,113 @@ async function scanKoishiRisks(dir, pkg) {
     }
   }
   return risks
+}
+
+// ═══════════════════ COMPAT 版本兼容层静态识别（F2，--compat）═══════════════════
+// 只做"改名/别名"级识别（不做语义转译），判级 COMPAT/Compliant/Not-Compliant，
+// 供市场打 COMPAT 徽章与 fail-soft 联动。注册表随 DSH 版本演进（维护组维护）。
+const COMPAT_REGISTRY = {
+  forDSH: '0.1.0-rc.6',
+  /** 当前 DSH 版本的有效服务 key（原生服务，非未知）。 */
+  currentServices: ['tools', 'llm', 'subagents', 'systemPrompt', 'agents', 'webServer', 'workspaceRegistry', 'compaction', 'commands', 'agentDefaultModel', 'mneme', 'pluginHub'],
+  serviceAliases: {
+    webServer: ['httpServer'],
+    workspaceRegistry: ['workspace'],
+    compaction: ['compact'],
+  },
+  packageAliases: {
+    '@deepseek-ai/dsh-web-server': ['@deepseek-ai/dsh-host-webserver'],
+  },
+}
+
+/** 最小 semver 解析（支持 ^x.y.z / ~x.y.z / >=x <y / x.y.z / x / *）。 */
+function parseVer(s) {
+  const m = /^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].+)?$/.exec(String(s).trim())
+  if (!m) return null
+  return { maj: +m[1], min: m[2] ? +m[2] : 0, pat: m[3] ? +m[3] : 0 }
+}
+function cmpVer(a, b) {
+  if (!a || !b) return 0
+  return (a.maj - b.maj) || (a.min - b.min) || (a.pat - b.pat)
+}
+/** 单段范围满足（支持 ^ / ~ / >= / > / <= / < / 精确 / *）。 */
+function satSingle(range, v) {
+  const r = range.trim()
+  if (!r || r === '*' || r === 'x' || r === 'X') return true
+  const m = /^(\^|~|>=|<=|>|<|=)?\s*v?(\d+|\*)(?:\.(\d+|\*))?(?:\.(\d+|\*))?$/.exec(r)
+  if (!m) return true // 解析不了 → 不误判（保守放行）
+  const op = m[1] || '='
+  const mk = (a, b, c) => ({ maj: a === '*' ? 0 : +a, min: b === '*' || b === undefined ? 0 : +b, pat: c === '*' || c === undefined ? 0 : +c })
+  const base = mk(m[2], m[3], m[4])
+  const any = m[2] === '*' || m[3] === '*' || m[4] === '*'
+  if (op === '^') {
+    if (any) return true
+    const lower = mk(m[2], m[3] ?? 0, 0)
+    const upper = mk(m[2] === '0' ? 0 : +m[2] + 1, 0, 0)
+    return cmpVer(v, lower) >= 0 && cmpVer(v, upper) < 0
+  }
+  if (op === '~') return cmpVer(v, base) >= 0 && cmpVer(v, { maj: base.maj, min: base.min + 1, pat: 0 }) < 0
+  if (op === '>') return cmpVer(v, base) > 0
+  if (op === '>=') return cmpVer(v, base) >= 0
+  if (op === '<') return cmpVer(v, base) < 0
+  if (op === '<=') return cmpVer(v, base) <= 0
+  if (op === '=') return any ? true : cmpVer(v, base) === 0
+  return true
+}
+/** 范围满足（支持 || 与空格分段）。 */
+function semverSatisfies(version, range) {
+  const v = parseVer(version)
+  if (!v) return false
+  for (const part of String(range).split('||')) {
+    if (part.split(/\s+/).filter(Boolean).every((seg) => satSingle(seg, v))) return true
+  }
+  return false
+}
+
+/** 静态扫描插件的 COMPAT 相关引用（peerDep 范围 / 服务 key / 旧包名）。 */
+async function scanCompat(dir, pkg) {
+  const referencedKeys = new Set()
+  const oldPackages = new Set()
+  const rangeIssues = []
+  // 1) peerDependencies 中 @deepseek-ai/* 的范围 + 旧包名识别
+  const peers = pkg.peerDependencies || {}
+  const oldPkgList = Object.values(COMPAT_REGISTRY.packageAliases).flat()
+  for (const [k, range] of Object.entries(peers)) {
+    if (!k.startsWith('@deepseek-ai/')) continue
+    if (!semverSatisfies(COMPAT_REGISTRY.forDSH, range)) rangeIssues.push(`${k}@${range}`)
+    if (oldPkgList.includes(k)) oldPackages.add(k) // peerDep 声明了旧包名
+  }
+  // 2) 服务 key / 包名引用扫描（main + lib 下 js/cjs/mjs/ts）
+  const files = []
+  if (pkg.main) files.push(resolve(dir, pkg.main))
+  try {
+    for (const e of await readdir(resolve(dir, 'lib'))) if (/\.(js|cjs|mjs|ts)$/.test(e)) files.push(resolve(dir, 'lib', e))
+  } catch { /* 无 lib */ }
+  const allOldKeys = new Set(Object.values(COMPAT_REGISTRY.serviceAliases).flat())
+  const allNewKeys = Object.keys(COMPAT_REGISTRY.serviceAliases)
+  const knownRuntime = new Set(['get', 'logger', 'on', 'emit', 'provide', 'effect', 'inject', 'plugin', 'registry', 'root', 'model', 'config', 'runtime'])
+  for (const f of files) {
+    let t
+    try { t = await readFile(f, 'utf8') } catch { continue }
+    for (const m of t.matchAll(/ctx\.get\(['"]([a-zA-Z]+)['"]\)|ctx\.([a-zA-Z]+)\b/g)) {
+      const k = m[1] ?? m[2]
+      if (k && !knownRuntime.has(k) && !referencedKeys.has(k)) referencedKeys.add(k)
+    }
+    for (const m of t.matchAll(/from\s+['"](@deepseek-ai\/[^'"]+)['"]|require\(['"](@deepseek-ai\/[^'"]+)['"]\)/g)) {
+      const p = m[1] ?? m[2]
+      if (Object.values(COMPAT_REGISTRY.packageAliases).flat().includes(p)) oldPackages.add(p)
+    }
+  }
+  return { referencedKeys: [...referencedKeys], oldPackages: [...oldPackages], rangeIssues, allOldKeys, allNewKeys, currentServices: COMPAT_REGISTRY.currentServices }
+}
+
+/** 判级：未知服务 key → Not-Compliant；命中改名/旧包名/范围不满足 → COMPAT；否则 Compliant。 */
+function judgeCompat(s) {
+  const unknown = s.referencedKeys.filter((k) => !s.currentServices.includes(k) && !s.allNewKeys.includes(k) && !s.allOldKeys.has(k))
+  if (unknown.length > 0) return { level: 'Not-Compliant', unknown }
+  const hitsOld = s.referencedKeys.filter((k) => s.allOldKeys.has(k))
+  const compat = s.rangeIssues.length > 0 || hitsOld.length > 0 || s.oldPackages.length > 0
+  return { level: compat ? 'COMPAT' : 'Compliant', unknown, hitsOld }
 }
 
 function record(level, clause, message) {
@@ -185,14 +293,14 @@ function parsePatch(profileText) {
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.version) {
-    process.stdout.write('DSH Plugin Standard checker 2.1.0\n')
+    process.stdout.write('DSH Plugin Standard checker 2.2.0\n')
     process.exit(0)
   }
   if (args.help) {
     process.stdout.write(
       'DSH 插件规范合规校验器\n\n' +
       '用法:\n' +
-      '  node scripts/verify-plugin.mjs [插件目录] [--pack] [--koishi] [--json] [--version]\n\n' +
+      '  node scripts/verify-plugin.mjs [插件目录] [--pack] [--koishi] [--compat] [--json] [--version]\n\n' +
       '退出码:\n' +
       '  0 = 无 MUST 违规\n' +
       '  1 = 存在 MUST 违规\n' +
@@ -230,6 +338,8 @@ async function main() {
   // ---- 2.1.1 type: module ----
   if (koishiMode) {
     record('INFO', '2.1.1', 'koishi 兼容模式：跳过 type:module 要求（CJS/默认导出由 cordis loader 归一化）')
+  } else if (args.compat) {
+    record('INFO', '2.1.1', 'COMPAT 识别模式：跳过 type:module 要求（旧版插件可能 CJS，由 COMPAT 判级决定）')
   } else if (pkg.type === 'module') {
     record('PASS', '2.1.1', 'type: module')
   } else {
@@ -398,6 +508,32 @@ async function main() {
     record('INFO', 'KO4', 'koishi 兼容 = 门槛级 Compliant（结构合规 + shim 覆盖），非 DSH 原生合规；按特殊通道 Experimental 上架')
   }
 
+  // ---- COMPAT 版本兼容层静态识别（--compat / F2）----
+  let compatLevel = null
+  if (args.compat) {
+    const s = await scanCompat(dir, pkg)
+    const judged = judgeCompat(s)
+    compatLevel = judged.level
+    if (s.rangeIssues.length === 0) {
+      record('PASS', 'CP1', 'peerDependencies @deepseek-ai/* 范围覆盖当前 DSH 版本')
+    } else {
+      record('WARN', 'CP1', `peerDependencies 范围不覆盖当前 DSH ${COMPAT_REGISTRY.forDSH}: ${s.rangeIssues.join(', ')}`)
+    }
+    if (judged.unknown.length > 0) {
+      record('FAIL', 'CP2', `引用未知服务 key（不可 shim，语义缺失）: ${judged.unknown.join(', ')}`)
+    } else if (judged.hitsOld.length > 0) {
+      record('WARN', 'CP2', `引用旧服务 key（可 COMPAT 别名重定向）: ${judged.hitsOld.join(', ')}`)
+    } else {
+      record('PASS', 'CP2', '服务 key 引用无未知/旧名')
+    }
+    if (s.oldPackages.length > 0) {
+      record('WARN', 'CP3', `引用旧包名（可 COMPAT 包名重定向）: ${s.oldPackages.join(', ')}`)
+    } else {
+      record('PASS', 'CP3', '无旧包名引用')
+    }
+    record('INFO', 'CP4', `COMPAT 判级: ${compatLevel}${compatLevel === 'Not-Compliant' ? '（不可 shim，需拒装或特殊通道）' : compatLevel === 'COMPAT' ? '（未适配当前版本，由 shim 托底运行 + COMPAT 徽章）' : '（原生适配当前版本）'}`)
+  }
+
   // ---- 6.1 scripts 门禁（SHOULD） ----
   const scripts = pkg.scripts || {}
   const required = ['typecheck', 'build', 'test', 'verify', 'pack']
@@ -456,7 +592,9 @@ async function main() {
   const infos = results.filter((r) => r.level === 'INFO')
 
   if (args.json) {
-    process.stdout.write(JSON.stringify({ dir, package: pkg.name, version: pkg.version, results, summary: { fail: fails.length, warn: warns.length, info: infos.length } }, null, 2) + '\n')
+    const out = { dir, package: pkg.name, version: pkg.version, results, summary: { fail: fails.length, warn: warns.length, info: infos.length } }
+    if (args.compat) out.compat = compatLevel
+    process.stdout.write(JSON.stringify(out, null, 2) + '\n')
   } else {
     process.stdout.write(`\nDSH 插件规范合规校验 — ${pkg.name}@${pkg.version}（${dir}）\n`)
     process.stdout.write(`${'-'.repeat(72)}\n`)

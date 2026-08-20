@@ -16,12 +16,15 @@ const cases = [
   { dir: 'test/fixtures/bad-deps', expect: 1, note: '@deepseek-ai/* in dependencies' },
   { dir: 'test/fixtures/ok-koishi', expect: 0, note: 'koishi compatible (auto mode, peerDeps.koishi present)' },
   { dir: 'test/fixtures/bad-koishi-nopeer', expect: 1, note: 'koishi missing peerDependencies.koishi' },
+  { dir: 'test/fixtures/ok-compat', expect: 0, note: 'compat: 原生 Compliant', flags: ['--compat'] },
+  { dir: 'test/fixtures/compat-old', expect: 0, note: 'compat: 旧 key/旧包名 → COMPAT（可 shim，不 FAIL）', flags: ['--compat'] },
+  { dir: 'test/fixtures/compat-bad', expect: 1, note: 'compat: 未知服务 key → Not-Compliant（FAIL）', flags: ['--compat'] },
 ]
 
 let failed = 0
 for (const c of cases) {
   const dir = resolve(ROOT, c.dir)
-  const res = spawnSync(process.execPath, [checker, dir, '--json'], { encoding: 'utf8' })
+  const res = spawnSync(process.execPath, [checker, dir, '--json', ...(c.flags ?? [])], { encoding: 'utf8' })
   let json
   try {
     json = JSON.parse(res.stdout)
