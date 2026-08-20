@@ -185,7 +185,7 @@ function parsePatch(profileText) {
 async function main() {
   const args = parseArgs(process.argv.slice(2))
   if (args.version) {
-    process.stdout.write('DSH Plugin Standard checker 2.0.0\n')
+    process.stdout.write('DSH Plugin Standard checker 2.1.0\n')
     process.exit(0)
   }
   if (args.help) {
